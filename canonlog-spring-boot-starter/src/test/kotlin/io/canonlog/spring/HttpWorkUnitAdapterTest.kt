@@ -1,0 +1,109 @@
+package io.canonlog.spring
+
+import io.canonlog.CanonicalLogContext
+import io.canonlog.Outcome
+import io.kotest.core.spec.style.DescribeSpec
+import io.kotest.matchers.shouldBe
+import org.springframework.mock.web.MockHttpServletRequest
+import org.springframework.mock.web.MockHttpServletResponse
+
+private fun ctx(): CanonicalLogContext = CanonicalLogContext(
+    io.canonlog.WorkUnit("wu-1", "http", java.time.Instant.now()),
+)
+
+private fun exchange(
+    method: String = "GET",
+    uri: String = "/posts/1",
+    status: Int = 200,
+    requestId: String? = null,
+): HttpExchange {
+    val req = MockHttpServletRequest(method, uri)
+    if (requestId != null) req.addHeader("X-Request-Id", requestId)
+    val res = MockHttpServletResponse()
+    res.status = status
+    return HttpExchange(req, res)
+}
+
+class HttpWorkUnitAdapterTest : DescribeSpec({
+
+    val adapter = HttpWorkUnitAdapter()
+
+    describe("describe") {
+        it("uses X-Request-Id when present") {
+            adapter.describe(exchange(requestId = "req-42")).id shouldBe "req-42"
+        }
+        it("falls back to a generated UUID when missing") {
+            val id = adapter.describe(exchange()).id
+            id.length shouldBe 36
+        }
+    }
+
+    describe("enrich on Outcome.Completed") {
+        it("populates the basic HTTP fields") {
+            val c = ctx()
+            adapter.enrich(c, exchange(method = "POST", uri = "/x", status = 201), Outcome.Completed(12L))
+
+            val s = c.snapshot()
+            s["http_request_method"] shouldBe "POST"
+            s["http_route"] shouldBe "/x"
+            s["http_response_status_code"] shouldBe 201L
+            s["http_request_duration_ms"] shouldBe 12L
+            s["work_unit_kind"] shouldBe "http"
+            s.containsKey("error") shouldBe false
+        }
+
+        it("does not flag 2xx as error") {
+            val c = ctx()
+            adapter.enrich(c, exchange(status = 200), Outcome.Completed(1L))
+            c.snapshot().containsKey("error") shouldBe false
+        }
+
+        it("does not flag 4xx as error (handler decides via markFailed)") {
+            val c = ctx()
+            adapter.enrich(c, exchange(status = 404), Outcome.Completed(1L))
+            c.snapshot().containsKey("error") shouldBe false
+        }
+
+        it("flags 5xx as error with default reason 'server_error'") {
+            val c = ctx()
+            adapter.enrich(c, exchange(status = 503), Outcome.Completed(1L))
+
+            val s = c.snapshot()
+            s["error"] shouldBe true
+            s["error_reason"] shouldBe "server_error"
+        }
+
+        it("defers to handler-set error_reason on a 5xx") {
+            val c = ctx()
+            c.markFailed("upstream_timeout")
+            adapter.enrich(c, exchange(status = 503), Outcome.Completed(1L))
+
+            val s = c.snapshot()
+            s["error"] shouldBe true
+            s["error_reason"] shouldBe "upstream_timeout"
+        }
+    }
+
+    describe("enrich on Outcome.Threw") {
+        it("sets error, error_class, and a default error_reason") {
+            val c = ctx()
+            adapter.enrich(c, exchange(status = 500), Outcome.Threw(5L, IllegalStateException("boom")))
+
+            val s = c.snapshot()
+            s["error"] shouldBe true
+            s["error_class"] shouldBe "java.lang.IllegalStateException"
+            s["error_reason"] shouldBe "exception"
+        }
+
+        it("defers to handler-set error_reason when an exception is thrown") {
+            val c = ctx()
+            c.markFailed("validation_failed")
+            adapter.enrich(c, exchange(status = 500), Outcome.Threw(5L, IllegalStateException("boom")))
+
+            val s = c.snapshot()
+            s["error"] shouldBe true
+            s["error_reason"] shouldBe "validation_failed"
+            s["error_class"] shouldBe "java.lang.IllegalStateException"
+        }
+    }
+})

@@ -1,0 +1,10 @@
+CREATE TABLE IF NOT EXISTS posts (
+    id BIGINT PRIMARY KEY,
+    title VARCHAR(255) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS post_tags (
+    post_id BIGINT NOT NULL,
+    tag VARCHAR(64) NOT NULL,
+    PRIMARY KEY (post_id, tag)
+);
