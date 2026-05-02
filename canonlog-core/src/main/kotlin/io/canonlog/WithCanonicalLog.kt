@@ -6,6 +6,33 @@ import kotlinx.coroutines.withContext
 
 public typealias EmitFn = (CanonicalLogContext) -> Unit
 
+/**
+ * Blocking entry point for opening a canonical work unit.
+ *
+ * Lifecycle:
+ *  1. Build a [CanonicalLogContext] from `adapter.describe(input)`.
+ *  2. Install it as the current-thread canonical context.
+ *  3. Run [block] with the context.
+ *  4. Call `adapter.enrich` exactly once with the resulting [Outcome].
+ *  5. Restore the previous threadlocal binding and call [emit] — both always run.
+ *  6. Return the block's result, or rethrow its exception.
+ *
+ * Calling this inside an already-active work unit is **undefined**. Nested work
+ * units are not yet supported (see CLAUDE.md). Calling it inside a coroutine
+ * that does dispatcher switches is **undefined** for the inner switches —
+ * the threadlocal is set on the entering thread only; coroutines that move to
+ * other dispatchers won't see it. Use [withCanonicalLog] for suspend code, or
+ * pair this with [withCanonicalCoroutineContext] inside the block.
+ *
+ * **Adapter exceptions:** `WorkUnitAdapter.enrich` is expected not to throw —
+ * it's library-author code, not adopter code, and a throwing adapter is a bug.
+ * As a defensive guarantee: if it does throw, the failure is recorded in the
+ * canonical line itself via `canonlog_enrich_error: true` and
+ * `canonlog_enrich_error_class: <fqcn>`. If the block succeeded, the enrich
+ * exception propagates to the caller (something is genuinely broken). If the
+ * block also threw, the block's exception wins; the enrich failure is captured
+ * only via the marker fields on the canonical line.
+ */
 @OptIn(DelicateCanonicalLogApi::class)
 public fun <T, R> withCanonicalLogBlocking(
     adapter: WorkUnitAdapter<T>,
@@ -17,17 +44,16 @@ public fun <T, R> withCanonicalLogBlocking(
     val previous = threadLocalContext.get()
     threadLocalContext.set(ctx)
     val startNs = System.nanoTime()
-    try {
-        val result = block(ctx)
-        adapter.enrich(ctx, input, Outcome.Completed(elapsedMs(startNs)))
-        return result
-    } catch (t: Throwable) {
-        adapter.enrich(ctx, input, Outcome.Threw(elapsedMs(startNs), t))
-        throw t
-    } finally {
-        threadLocalContext.set(previous)
-        emit(ctx)
-    }
+    val blockResult: Result<R> = runCatching { block(ctx) }
+    val outcome = blockResult.fold(
+        onSuccess = { Outcome.Completed(elapsedMs(startNs)) },
+        onFailure = { Outcome.Threw(elapsedMs(startNs), it) },
+    )
+    val enrichExceptionToPropagate = runEnrich(adapter, ctx, input, outcome, blockResult.isSuccess)
+    threadLocalContext.set(previous)
+    emit(ctx)
+    if (enrichExceptionToPropagate != null) throw enrichExceptionToPropagate
+    return blockResult.getOrThrow()
 }
 
 /**
@@ -40,6 +66,11 @@ public fun <T, R> withCanonicalLogBlocking(
  * scope). Without the receiver, bare `async { ... }` inside the block silently
  * inherits the outer context, which has no canonical element, and contributions from
  * inside the async coroutine are lost.
+ *
+ * Calling this inside an already-active work unit is **undefined**. Nested work
+ * units are not yet supported (see CLAUDE.md).
+ *
+ * Adapter exception handling matches [withCanonicalLogBlocking].
  */
 @OptIn(DelicateCanonicalLogApi::class)
 public suspend fun <T, R> withCanonicalLog(
@@ -51,16 +82,15 @@ public suspend fun <T, R> withCanonicalLog(
     val ctx = CanonicalLogContext(adapter.describe(input))
     val startNs = System.nanoTime()
     return withContext(CanonicalLogElement(ctx)) {
-        try {
-            val result = block(ctx)
-            adapter.enrich(ctx, input, Outcome.Completed(elapsedMs(startNs)))
-            result
-        } catch (t: Throwable) {
-            adapter.enrich(ctx, input, Outcome.Threw(elapsedMs(startNs), t))
-            throw t
-        } finally {
-            emit(ctx)
-        }
+        val blockResult: Result<R> = runCatching { block(ctx) }
+        val outcome = blockResult.fold(
+            onSuccess = { Outcome.Completed(elapsedMs(startNs)) },
+            onFailure = { Outcome.Threw(elapsedMs(startNs), it) },
+        )
+        val enrichExceptionToPropagate = runEnrich(adapter, ctx, input, outcome, blockResult.isSuccess)
+        emit(ctx)
+        if (enrichExceptionToPropagate != null) throw enrichExceptionToPropagate
+        blockResult.getOrThrow()
     }
 }
 
@@ -89,6 +119,24 @@ public suspend fun <R> withCanonicalCoroutineContext(
     } else {
         coroutineScope(block)
     }
+}
+
+private fun <T> runEnrich(
+    adapter: WorkUnitAdapter<T>,
+    ctx: CanonicalLogContext,
+    input: T,
+    outcome: Outcome,
+    blockSucceeded: Boolean,
+): Throwable? = try {
+    adapter.enrich(ctx, input, outcome)
+    null
+} catch (enrichEx: Throwable) {
+    ctx.put("canonlog_enrich_error", true)
+    ctx.put("canonlog_enrich_error_class", enrichEx::class.qualifiedName ?: "unknown")
+    // If the block succeeded, the enrich exception is the only failure signal — propagate
+    // it. If the block failed too, its exception is more useful to the caller; the enrich
+    // failure is captured only via the marker fields on the canonical line.
+    if (blockSucceeded) enrichEx else null
 }
 
 private fun elapsedMs(startNs: Long): Long = (System.nanoTime() - startNs) / 1_000_000

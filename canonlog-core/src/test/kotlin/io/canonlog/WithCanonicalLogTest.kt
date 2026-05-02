@@ -24,6 +24,15 @@ private fun nestedHelper(value: String) {
     CanonicalLog.put("nested_field", value)
 }
 
+private class ThrowingEnrichAdapter(private val toThrow: Throwable) : WorkUnitAdapter<String> {
+    var enrichCalls: Int = 0
+    override fun describe(input: String): WorkUnit = WorkUnit(input, "test", Instant.now())
+    override fun enrich(ctx: CanonicalLogContext, input: String, outcome: Outcome) {
+        enrichCalls++
+        throw toThrow
+    }
+}
+
 @OptIn(DelicateCanonicalLogApi::class)
 class WithCanonicalLogTest : DescribeSpec({
 
@@ -102,6 +111,53 @@ class WithCanonicalLogTest : DescribeSpec({
             }
             snap["nested_field"] shouldBe "layer1"
         }
+
+        it("calls adapter.enrich exactly once even on success path") {
+            val adapter = object : WorkUnitAdapter<String> {
+                var calls = 0
+                override fun describe(input: String) = WorkUnit(input, "test", Instant.now())
+                override fun enrich(ctx: CanonicalLogContext, input: String, outcome: Outcome) {
+                    calls++
+                }
+            }
+            withCanonicalLogBlocking(adapter, "wu", { }) { "ok" }
+            adapter.calls shouldBe 1
+        }
+
+        it("if adapter.enrich throws on success, that exception propagates and the canonical line is marked") {
+            var snap: Map<String, Any> = emptyMap()
+            val enrichEx = IllegalStateException("enrich blew up")
+            val adapter = ThrowingEnrichAdapter(enrichEx)
+
+            val ex = runCatching {
+                withCanonicalLogBlocking(adapter, "wu", { snap = it.snapshot() }) { "ok" }
+            }.exceptionOrNull()
+
+            adapter.enrichCalls shouldBe 1
+            ex shouldBe enrichEx
+            snap["canonlog_enrich_error"] shouldBe true
+            snap["canonlog_enrich_error_class"] shouldBe "java.lang.IllegalStateException"
+            currentCanonicalContext() shouldBe null
+        }
+
+        it("if both block and adapter.enrich throw, block exception is primary; enrich captured on the canonical line") {
+            var snap: Map<String, Any> = emptyMap()
+            val blockEx = IllegalArgumentException("block blew up")
+            val enrichEx = IllegalStateException("enrich blew up")
+            val adapter = ThrowingEnrichAdapter(enrichEx)
+
+            val ex = runCatching {
+                withCanonicalLogBlocking<String, String>(adapter, "wu", { snap = it.snapshot() }) {
+                    throw blockEx
+                }
+            }.exceptionOrNull()
+
+            adapter.enrichCalls shouldBe 1
+            ex shouldBe blockEx
+            snap["canonlog_enrich_error"] shouldBe true
+            snap["canonlog_enrich_error_class"] shouldBe "java.lang.IllegalStateException"
+            currentCanonicalContext() shouldBe null
+        }
     }
 
     describe("withCanonicalLog (suspend)") {
@@ -153,6 +209,46 @@ class WithCanonicalLogTest : DescribeSpec({
             ex.shouldBeInstanceOf<IllegalStateException>()
             ex.message shouldBe "boom"
             emitCount.get() shouldBe 1
+        }
+
+        it("calls adapter.enrich exactly once and emits exactly once when the suspend block throws") {
+            val adapter = object : WorkUnitAdapter<String> {
+                var enrichCalls = 0
+                override fun describe(input: String) = WorkUnit(input, "test", Instant.now())
+                override fun enrich(ctx: CanonicalLogContext, input: String, outcome: Outcome) {
+                    enrichCalls++
+                }
+            }
+            val emitCount = AtomicInteger()
+            runCatching {
+                runBlocking {
+                    withCanonicalLog<String, Unit>(adapter, "wu", { emitCount.incrementAndGet() }) {
+                        error("boom")
+                    }
+                }
+            }
+            adapter.enrichCalls shouldBe 1
+            emitCount.get() shouldBe 1
+        }
+
+        it("if both block and adapter.enrich throw in the suspend variant, block exception is primary; enrich captured on the canonical line") {
+            var snap: Map<String, Any> = emptyMap()
+            val blockEx = IllegalArgumentException("block blew up")
+            val enrichEx = IllegalStateException("enrich blew up")
+            val adapter = ThrowingEnrichAdapter(enrichEx)
+
+            val ex = runCatching {
+                runBlocking {
+                    withCanonicalLog<String, String>(adapter, "wu", { snap = it.snapshot() }) {
+                        throw blockEx
+                    }
+                }
+            }.exceptionOrNull()
+
+            adapter.enrichCalls shouldBe 1
+            ex shouldBe blockEx
+            snap["canonlog_enrich_error"] shouldBe true
+            snap["canonlog_enrich_error_class"] shouldBe "java.lang.IllegalStateException"
         }
     }
 })

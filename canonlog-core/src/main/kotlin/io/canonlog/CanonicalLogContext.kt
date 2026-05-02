@@ -13,8 +13,13 @@ public class CanonicalLogContext @DelicateCanonicalLogApi public constructor(
     }
 
     public fun increment(key: String, by: Long = 1L) {
-        fields.merge(key, by) { existing, addition ->
-            (existing as Long) + (addition as Long)
+        fields.merge(key, by) { existing, _ ->
+            check(existing is Long) {
+                "Cannot increment canonical-log field '$key': existing value has type " +
+                    "${existing::class.qualifiedName}, expected Long. A field that's " +
+                    "incremented must only ever be written via increment(), never put()."
+            }
+            existing + by
         }
     }
 
@@ -22,10 +27,10 @@ public class CanonicalLogContext @DelicateCanonicalLogApi public constructor(
      * Mark this work unit as failed. Sets `error=true` and `error_reason=<reason>`,
      * plus any extra fields the caller supplies. Idempotent — last call wins.
      */
-    public fun markFailed(reason: String, vararg fields: Pair<String, Any>) {
+    public fun markFailed(reason: String, vararg extras: Pair<String, Any>) {
         put("error", true)
         put("error_reason", reason)
-        fields.forEach { (k, v) -> put(k, v) }
+        extras.forEach { (k, v) -> put(k, v) }
     }
 
     /**
@@ -33,10 +38,10 @@ public class CanonicalLogContext @DelicateCanonicalLogApi public constructor(
      * `degraded=true` and `degraded_reason=<reason>`, plus any extra fields.
      * Does not set `error`.
      */
-    public fun markDegraded(reason: String, vararg fields: Pair<String, Any>) {
+    public fun markDegraded(reason: String, vararg extras: Pair<String, Any>) {
         put("degraded", true)
         put("degraded_reason", reason)
-        fields.forEach { (k, v) -> put(k, v) }
+        extras.forEach { (k, v) -> put(k, v) }
     }
 
     public fun snapshot(): Map<String, Any> = HashMap(fields)

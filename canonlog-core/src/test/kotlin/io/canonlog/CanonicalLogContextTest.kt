@@ -1,23 +1,10 @@
 package io.canonlog
 
+import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.shouldBe
-import io.kotest.matchers.shouldNotBe
+import io.kotest.matchers.string.shouldContain
 import java.time.Instant
-import java.util.concurrent.atomic.AtomicReference
-
-private val testAdapter = object : WorkUnitAdapter<String> {
-    override fun describe(input: String): WorkUnit = WorkUnit(
-        id = input,
-        kind = "test",
-        startedAt = Instant.now(),
-    )
-
-    override fun enrich(ctx: CanonicalLogContext, input: String, outcome: Outcome) {
-        ctx.put("outcome_kind", outcome::class.simpleName)
-        ctx.put("duration_ms", outcome.durationMs)
-    }
-}
 
 @OptIn(DelicateCanonicalLogApi::class)
 class CanonicalLogContextTest : DescribeSpec({
@@ -43,6 +30,26 @@ class CanonicalLogContextTest : DescribeSpec({
             val snap = ctx.snapshot()
             snap.containsKey("present") shouldBe true
             snap.containsKey("absent") shouldBe false
+        }
+
+        it("incrementing a field that was previously put as a non-Long throws a clear error") {
+            val ctx = CanonicalLogContext(WorkUnit("id", "kind", Instant.now()))
+            ctx.put("misused", "i should have been a long")
+
+            val ex = shouldThrow<IllegalStateException> { ctx.increment("misused") }
+            ex.message!! shouldContain "Cannot increment canonical-log field 'misused'"
+            ex.message!! shouldContain "kotlin.String"
+        }
+
+        it("markFailed with extras passes through to the snapshot") {
+            val ctx = CanonicalLogContext(WorkUnit("id", "kind", Instant.now()))
+            ctx.markFailed("validation_failed", "field" to "email", "code" to 422L)
+
+            val snap = ctx.snapshot()
+            snap["error"] shouldBe true
+            snap["error_reason"] shouldBe "validation_failed"
+            snap["field"] shouldBe "email"
+            snap["code"] shouldBe 422L
         }
 
         it("snapshot is a defensive copy") {
