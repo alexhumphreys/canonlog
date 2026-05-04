@@ -5,7 +5,7 @@ plugins {
 }
 
 dependencies {
-    implementation(project(":canonlog-spring-boot-starter"))
+    implementation(project(":canonical-log-spring-boot-starter"))
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.coroutines.reactor)
     implementation(libs.kotlin.reflect)

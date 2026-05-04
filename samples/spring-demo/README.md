@@ -1,6 +1,6 @@
-# canonlog spring-demo
+# canonical-log spring-demo
 
-Self-contained Spring Boot 4 sample showing canonlog wired into HTTP, JDBC, and OkHttp.
+Self-contained Spring Boot 4 sample showing canonical-log wired into HTTP, JDBC, and OkHttp.
 
 ## Run it
 

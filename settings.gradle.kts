@@ -1,4 +1,4 @@
-rootProject.name = "canonlog"
+rootProject.name = "canonical-log"
 
 dependencyResolutionManagement {
     repositories {
@@ -7,11 +7,11 @@ dependencyResolutionManagement {
 }
 
 include(
-    "canonlog-core",
-    "canonlog-okhttp",
-    "canonlog-okhttp-spring-boot-starter",
-    "canonlog-jdbc",
-    "canonlog-jdbc-spring-boot-starter",
-    "canonlog-spring-boot-starter",
+    "canonical-log-core",
+    "canonical-log-okhttp",
+    "canonical-log-okhttp-spring-boot-starter",
+    "canonical-log-jdbc",
+    "canonical-log-jdbc-spring-boot-starter",
+    "canonical-log-spring-boot-starter",
     "samples:spring-demo",
 )

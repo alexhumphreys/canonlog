@@ -9,7 +9,7 @@ plugins {
 }
 
 subprojects {
-    group = "io.canonlog"
+    group = "io.github.alexhumphreys"
     version = "0.1.0-SNAPSHOT"
 
     apply(plugin = "org.jetbrains.kotlin.jvm")
@@ -37,7 +37,7 @@ subprojects {
         useJUnitPlatform()
     }
 
-    val isLibrary = path.startsWith(":canonlog-")
+    val isLibrary = path.startsWith(":canonical-log-")
     if (isLibrary) {
         apply(plugin = "maven-publish")
         tasks.named<KotlinCompile>("compileKotlin").configure {

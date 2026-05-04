@@ -1,6 +1,6 @@
-# canonlog
+# canonical-log
 
-Stripe-style canonical log lines for JVM services. Pulling in `canonlog-spring-boot-starter` (or a per-library module) auto-attaches HTTP, DB, and other observability fields to a single log line emitted at the end of each unit of work.
+Stripe-style canonical log lines for JVM services. Pulling in `canonical-log-spring-boot-starter` (or a per-library module) auto-attaches HTTP, DB, and other observability fields to a single log line emitted at the end of each unit of work.
 
 The POC works end-to-end on a Spring Boot sample app. This document captures the architecture, the decisions behind it, and the work queue.
 
@@ -42,15 +42,15 @@ The accumulator lives for the lifetime of one work unit. Contributors (libraries
 
 ## Module layout
 
-- `canonlog-core` — accumulator, `WorkUnit`, `WorkUnitAdapter`, `Outcome`, `CanonicalLogContext`, the `ThreadContextElement` bridge. Framework-agnostic.
-- `canonlog-okhttp` — OkHttp `Interceptor` that contributes `http_client_request_count`, `http_client_request_duration_ms_total`. Framework-agnostic.
-- `canonlog-jdbc` — `datasource-proxy` `QueryExecutionListener` that contributes `db_query_count`, `db_execution_count`, `db_execution_duration_ms_total`, `db_slow_execution_count`, `db_execution_error_count`. Framework-agnostic.
-- `canonlog-okhttp-spring-boot-starter` — auto-config providing an `OkHttpClientBuilderCustomizer` bean that adopters apply to their own `OkHttpClient.Builder` constructions. **Unlike the HTTP filter and JDBC starters, this one requires adopter participation** because `OkHttpClient` is configured at builder time rather than at bean construction. Opt-out: `canonlog.okhttp.enabled=false`.
-- `canonlog-jdbc-spring-boot-starter` — auto-config wiring the JDBC contributor (uses `@JvmStatic` companion-object `@Bean` for the BeanPostProcessor per Spring's recommendation).
-- `canonlog-spring-boot-starter` — umbrella starter that pulls in the others plus the HTTP request adapter (servlet filter that creates the work unit, captures `http_request_method` / `http_route` / `http_response_status_code` / `http_request_duration_ms`, emits the line).
+- `canonical-log-core` — accumulator, `WorkUnit`, `WorkUnitAdapter`, `Outcome`, `CanonicalLogContext`, the `ThreadContextElement` bridge. Framework-agnostic.
+- `canonical-log-okhttp` — OkHttp `Interceptor` that contributes `http_client_request_count`, `http_client_request_duration_ms_total`. Framework-agnostic.
+- `canonical-log-jdbc` — `datasource-proxy` `QueryExecutionListener` that contributes `db_query_count`, `db_execution_count`, `db_execution_duration_ms_total`, `db_slow_execution_count`, `db_execution_error_count`. Framework-agnostic.
+- `canonical-log-okhttp-spring-boot-starter` — auto-config providing an `OkHttpClientBuilderCustomizer` bean that adopters apply to their own `OkHttpClient.Builder` constructions. **Unlike the HTTP filter and JDBC starters, this one requires adopter participation** because `OkHttpClient` is configured at builder time rather than at bean construction. Opt-out: `canonical-log.okhttp.enabled=false`.
+- `canonical-log-jdbc-spring-boot-starter` — auto-config wiring the JDBC contributor (uses `@JvmStatic` companion-object `@Bean` for the BeanPostProcessor per Spring's recommendation).
+- `canonical-log-spring-boot-starter` — umbrella starter that pulls in the others plus the HTTP request adapter (servlet filter that creates the work unit, captures `http_request_method` / `http_route` / `http_response_status_code` / `http_request_duration_ms`, emits the line).
 - Sample app — exercises everything.
 
-The split between `canonlog-<lib>` and `canonlog-<lib>-spring-boot-starter` follows Java ecosystem convention: contributors are framework-agnostic, starters are the integration glue. This keeps the door open for Quarkus/Micronaut starters later without duplication.
+The split between `canonical-log-<lib>` and `canonical-log-<lib>-spring-boot-starter` follows Java ecosystem convention: contributors are framework-agnostic, starters are the integration glue. This keeps the door open for Quarkus/Micronaut starters later without duplication.
 
 ## Decisions and rationale
 
@@ -100,7 +100,7 @@ If you can't explain a proposed contributor in those terms, it probably belongs 
 - Ship: configuration DSL, scoped contribution (`canonical("ns") { ... }`), work unit declaration.
 - Skip: contributor-authoring DSL (write a class), assertion DSL (negative assertions are first-class but no DSL on top), field registry DSL (operator concern), builder DSL (constructors are fine).
 
-**OTel positioning.** OpenTelemetry is a data model and transport, orthogonal to the canonical log pattern. Ship `canonlog-otel` as an optional sink module later. Do not make OTel a core dependency.
+**OTel positioning.** OpenTelemetry is a data model and transport, orthogonal to the canonical log pattern. Ship `canonical-log-otel` as an optional sink module later. Do not make OTel a core dependency.
 
 **OkHttp wiring uses a customizer, not a `BeanPostProcessor`.** The HTTP filter and JDBC starters auto-wire transparently — Spring controls when their hook fires (filter chain, bean construction). OkHttp is different: an `OkHttpClient` is configured via builders and its interceptors can't be added after `build()`. Three options were considered:
 
@@ -129,7 +129,7 @@ These have already bitten or nearly bitten:
 - **Uncaught exception status capture is filter-stage-bound.** When a controller throws an unhandled exception, Tomcat's outer valve maps it to 500 *after* `CanonicalLogFilter` unwinds. The filter sees `response.status` as still 200 at the moment of catch. The adapter compensates: when `Outcome.Threw` and `response.status < 500`, it overrides `http_response_status_code` to 500 to match what the client actually receives. This is heuristic — if a custom error handler maps to a different 5xx (e.g. 503), the canonical line will report 500 instead. Pinned by `HttpWorkUnitAdapterTest`; documented as a known approximation.
 - **Cancellation semantics are undefined.** Servlet container request timeouts cancel the controller's coroutine mid-flight (e.g. inside `withContext(Dispatchers.IO)`). What the canonical line should report (`Outcome.Cancelled`? Threw with `CancellationException`? `error_reason="cancelled"`?), whether contributions in flight at cancellation time land or are silently dropped, and how the AsyncListener.onTimeout path interacts with it — all currently undefined. Sketch the semantics before adopters depend on the behaviour.
 - **Virtual threads work end-to-end.** Verified: with `spring.threads.virtual.enabled=true` in `application.properties`, the entire test suite (67 tests) passes, the suspend endpoint runs entirely on virtual threads (`Thread.currentThread().isVirtual == true` on every request entry), and `ab -n 5000 -c 50 -k http://localhost:8080/suspend/posts/1` produces 5000 lines with zero field bleeding. The sample app currently has virtual threads enabled by default. The bridge, filter, accumulator, and contributors all behave identically on virtual and platform threads — the threadlocal abstraction abstracts over both uniformly.
-- **JDBC starter replaces `DataSource` beans with proxies.** `JdbcCanonicalBeanPostProcessor` runs at `Ordered.LOWEST_PRECEDENCE` so it wraps the outermost `DataSource` proxy. Two adopter-visible consequences: (a) injecting by concrete type (`@Autowired private val ds: HikariDataSource`) fails with `BeanNotOfRequiredTypeException` — adopters must inject `DataSource` instead; (b) when another `datasource-proxy` user is on the classpath we add ourselves to the existing chain rather than re-wrap, but if a *non-`datasource-proxy`* tracing wrapper sits above us we proxy that wrapper, which means our `db_execution_duration_ms_total` includes its overhead. Both behaviours are deliberate (pinned by `JdbcCanonicalAutoConfigurationTest`); the opt-out is `canonlog.jdbc.enabled=false`.
+- **JDBC starter replaces `DataSource` beans with proxies.** `JdbcCanonicalBeanPostProcessor` runs at `Ordered.LOWEST_PRECEDENCE` so it wraps the outermost `DataSource` proxy. Two adopter-visible consequences: (a) injecting by concrete type (`@Autowired private val ds: HikariDataSource`) fails with `BeanNotOfRequiredTypeException` — adopters must inject `DataSource` instead; (b) when another `datasource-proxy` user is on the classpath we add ourselves to the existing chain rather than re-wrap, but if a *non-`datasource-proxy`* tracing wrapper sits above us we proxy that wrapper, which means our `db_execution_duration_ms_total` includes its overhead. Both behaviours are deliberate (pinned by `JdbcCanonicalAutoConfigurationTest`); the opt-out is `canonical-log.jdbc.enabled=false`.
 - **Multiple `DataSource` beans aggregate into one canonical line.** The BPP wraps every `DataSource` it sees, and all of them write to the same active accumulator. So `db_query_count` for a request that touches both a `primary` and a `replica` is the sum across both. There is no per-datasource namespacing today (`db_query_count_primary` etc.). Decide whether to namespace before adopters with read-replica setups depend on the aggregated shape.
 - **Spring Boot's logback initialization clears `ListAppender` instances attached before `SpringApplication.run`.** Tests that capture canonical lines via a `ListAppender` on the `"canonical"` logger must attach the appender *after* `SpringApplication.run` returns, not before — otherwise logback re-reads `logback-spring.xml` during boot and the test sees zero events. Pinned by `samples/spring-demo:FullStackEndToEndTest` (which has an inline comment explaining this so the next person doesn't re-discover it).
 - **JDBC per-execution mean durations are reliable in integer ms; per-statement durations are not.** `db_execution_duration_ms_total / db_execution_count` gives mean per-round-trip latency, which is typically multi-ms even when individual statements aren't. Dividing by `db_query_count` instead would *under*-report per-statement latency for batched executions, because `datasource-proxy` charges duration once per `afterQuery` regardless of statement count. This is why the field rename happened (the old `db_query_duration_ms_total` was the worst of both worlds); document it here so the next person doesn't try to "fix" it back.
@@ -183,10 +183,10 @@ For a single-endpoint test, every line should have the same `post_id` and the sa
 8. **Blocking-entry → suspend bridge** — when the work unit is opened by a blocking entry point (e.g. the servlet filter calling `withCanonicalLogBlocking`) and a suspend body needs to bridge it into a coroutine context, use `withCanonicalCoroutineContext { ... }`. This reads the active threadlocal and lifts it into the coroutine context for downstream `withContext` switches. No-op if no work unit is active.
 
 **Pinned by tests:**
-- `canonlog-core:BridgeContractTest` (10 cases) covers points 1–8.
-- `canonlog-core:AccumulatorPropertyTest` covers points 4 and 7 with random concurrent contributions (sum invariant) and arbitrary nested coroutine structures (bridge resilience invariant) — 200 iterations per property.
-- `canonlog-spring-boot-starter:CanonicalLogFilterTest` covers the filter's lifecycle for sync, async, and exception paths.
-- `canonlog-spring-boot-starter:CanonicalLogFilterAsyncPropertyTest` pins the emit-exactly-once invariant under arbitrary `AsyncListener` callback orderings (200 iterations of random sequences from `{onComplete, onError, onTimeout}`).
+- `canonical-log-core:BridgeContractTest` (10 cases) covers points 1–8.
+- `canonical-log-core:AccumulatorPropertyTest` covers points 4 and 7 with random concurrent contributions (sum invariant) and arbitrary nested coroutine structures (bridge resilience invariant) — 200 iterations per property.
+- `canonical-log-spring-boot-starter:CanonicalLogFilterTest` covers the filter's lifecycle for sync, async, and exception paths.
+- `canonical-log-spring-boot-starter:CanonicalLogFilterAsyncPropertyTest` pins the emit-exactly-once invariant under arbitrary `AsyncListener` callback orderings (200 iterations of random sequences from `{onComplete, onError, onTimeout}`).
 - `samples/spring-demo:FullStackPropertyTest` boots a real Spring + Tomcat + filter + bridge stack and fires random `Action` plans (sequential, withContext, async/await, parallel fan-out, nested coroutineScope) at `POST /property/run` — runs the property against **both virtual-thread and platform-thread Tomcat configurations** (100 iterations each, 200 total). Asserts every increment in the plan lands in the canonical line for that request. This is the test that would have caught the original async-dispatch bug — and is the regression guard against future entry-point lifecycle changes on either thread mode.
 - The sample app's `/suspend/posts/{id}` plus `ab -n 1000 -c 10` covers the integration path end-to-end.
 
@@ -194,10 +194,10 @@ Any change to `CanonicalLogElement`, `bindCurrentCanonicalContext`, the threadlo
 
 **Async servlet dispatch is load-bearing.** Suspend controllers in Spring MVC are dispatched asynchronously: `chain.doFilter` returns *before* the handler completes. The filter detects this via `request.isAsyncStarted` and registers an `AsyncListener` to defer emit until completion. The single-emit invariant is enforced by an `AtomicBoolean`. If you change the filter, preserve: (a) emit-exactly-once across `onComplete`/`onError`/`onTimeout`, (b) sync-handler emit-inline, and (c) thread-local cleanup before the filter returns regardless of sync/async path.
 
-**`canonlog-test` module (deferred, but planned).** Eventually, contributor authors outside this repo will need shared test infrastructure. The module is intended to ship:
+**`canonical-log-test` module (deferred, but planned).** Eventually, contributor authors outside this repo will need shared test infrastructure. The module is intended to ship:
 
 - **`ContributorContractTest`** — a reusable test harness that every contributor should pass. The shape: start a work unit, run the contributor's instrumented operation, assert the expected fields appear with the expected types and naming conventions, assert nothing leaks that wasn't asked for. Concretely, an OkHttp contributor's contract test would verify `http_client_request_count` is a `long`, `http_client_request_duration_ms_total` is a `long` with the right suffix, and that no request bodies, headers, or query parameters appear in the output.
-- **Negative assertion helpers** (`hasNoField`, `hasNoFieldMatching`) as first-class API — currently they live in the canonlog repo's own tests, but they're the most useful when contributor authors outside the repo can use them too.
+- **Negative assertion helpers** (`hasNoField`, `hasNoFieldMatching`) as first-class API — currently they live in the canonical-log repo's own tests, but they're the most useful when contributor authors outside the repo can use them too.
 - **Test fixtures for the accumulator and bridge** — a way to spin up a `CanonicalLogContext` in a test without needing a real work unit lifecycle, and a way to assert on the emitted line without parsing log output.
 
 The reason to defer is concrete, not vague: until there are at least three contributors (probably `okhttp`, `jdbc`, and Kafka), you don't actually know which patterns are common enough to extract. Two contributors is a coincidence; three is a pattern. Extracting too early locks in the wrong abstraction.
@@ -240,7 +240,7 @@ Stack: JDK 25, Gradle 9.5, Spring Boot 4, Kotlin 2.2.20.
 - [x] Try a `suspend fun` controller in the sample to verify the `ThreadContextElement` path end-to-end, not just the blocking servlet path. *(Done — `/suspend/posts/{id}` exists and passes `ab -n 5000 -c 50 -k`. Bridge contract pinned by `BridgeContractTest` (11 cases) and `AccumulatorPropertyTest` (200 iterations × 2 properties).)*
 - [x] Re-run the test suite + load test with `spring.threads.virtual.enabled=true` to validate the virtual-thread story end-to-end. *(Done — sample now ships with virtual threads enabled by default; full suite + 5000-request load test pass with zero field bleeding.)*
 - [x] Configure UTC timestamps in the sample's `logback-spring.xml` (`<timeZone>UTC</timeZone>` on the encoder). *(Done — timestamps now end in `Z` for UTC.)*
-- [x] Add `service_name` and `environment` to the sample via Logstash `customFields` so the example lines look like something you'd actually deploy. *(Done — `service_name` from `spring.application.name`, `environment` from `canonlog.environment` (defaults to `local`); both appear on every log line via the encoder's `customFields`.)*
+- [x] Add `service_name` and `environment` to the sample via Logstash `customFields` so the example lines look like something you'd actually deploy. *(Done — `service_name` from `spring.application.name`, `environment` from `canonical-log.environment` (defaults to `local`); both appear on every log line via the encoder's `customFields`.)*
 - [x] Consider switching `CanonicalLogContext` constructor visibility from public to a `forTesting` factory before anyone depends on it. *(Done differently — went with `@RequiresOptIn(DelicateCanonicalLogApi)` annotation. The constructor stays public but requires explicit opt-in at use sites; the filter and tests opt-in once each. Idiomatic Kotlin, gives a real compile-time warning, more robust than a renamed factory.)*
 
 ### v0.2 candidates (pick based on demand)
@@ -251,7 +251,7 @@ Ordered roughly by likely usefulness:
 - **WebFlux / Reactor support.** Verify the bridge works with `Mono`/`Flux` context propagation. May need a Reactor-specific context-element shim.
 - **Resilience4j contributor.** Retry counts, circuit breaker state transitions, bulkhead rejections — all mechanically uniform, bounded, useful.
 - **Micrometer tracing contributor.** For trace correlation: contribute `trace_id` and `span_id` if a span is active.
-- **`canonlog-test` module.** See the Testing section for the intended shape. Trigger to un-defer is a third contributor (likely Kafka) needing the same testing pattern.
+- **`canonical-log-test` module.** See the Testing section for the intended shape. Trigger to un-defer is a third contributor (likely Kafka) needing the same testing pattern.
 - **LaunchDarkly contributor.** Flag evaluations during the work unit. Bounded cardinality if done right.
 - **Spring Security auth context contributor.** `auth_subject`, `auth_method`. Watch cardinality carefully.
 
@@ -265,7 +265,7 @@ Ordered roughly by likely usefulness:
 - Startup heartbeat endpoint (synthetic self-request through full filter chain to validate wiring at boot).
 - Maven Central publishing.
 - Arrow `Either` / KEEP-0441 integration helpers as separate modules.
-- `canonlog-otel` sink module.
+- `canonical-log-otel` sink module.
 
 ## Anti-goals
 

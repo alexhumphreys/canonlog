@@ -1,6 +1,6 @@
-# canonlog
+# canonical-log
 
-[![CI](https://github.com/alexhumphreys/canonlog/actions/workflows/ci.yml/badge.svg)](https://github.com/alexhumphreys/canonlog/actions/workflows/ci.yml)
+[![CI](https://github.com/alexhumphreys/canonical-log/actions/workflows/ci.yml/badge.svg)](https://github.com/alexhumphreys/canonical-log/actions/workflows/ci.yml)
 
 Stripe-style [canonical log lines](https://stripe.com/blog/canonical-log-lines) for JVM services. One wide, structured log line per unit of work, contributed to mechanically by HTTP, JDBC, and OkHttp instrumentation, augmented explicitly by handler code via a tiny API.
 
@@ -23,7 +23,7 @@ Stripe-style [canonical log lines](https://stripe.com/blog/canonical-log-lines) 
 ```kotlin
 // build.gradle.kts
 dependencies {
-    implementation("io.canonlog:canonlog-spring-boot-starter:0.1.0-SNAPSHOT")
+    implementation("io.github.alexhumphreys:canonical-log-spring-boot-starter:0.1.0-SNAPSHOT")
 }
 ```
 
@@ -61,7 +61,7 @@ fun okHttpClient(customizers: List<OkHttpClientBuilderCustomizer>): OkHttpClient
 }
 ```
 
-The list parameter composes cleanly: the canonical customizer ships under the bean name `canonicalOkHttpClientBuilderCustomizer`, and you can register additional `OkHttpClientBuilderCustomizer` beans (auth, logging, retries) without displacing it. Set `canonlog.okhttp.enabled=false` to opt out entirely.
+The list parameter composes cleanly: the canonical customizer ships under the bean name `canonicalOkHttpClientBuilderCustomizer`, and you can register additional `OkHttpClientBuilderCustomizer` beans (auth, logging, retries) without displacing it. Set `canonical-log.okhttp.enabled=false` to opt out entirely.
 
 The same pattern works for `RestTemplateBuilder` / `WebClient.Builder` users — Spring's own builders use the same shape.
 
@@ -75,7 +75,7 @@ Three real example lines from the [sample app](samples/spring-demo/), one per ou
 {
   "@timestamp": "2026-05-03T08:06:19.437881Z",
   "logger_name": "canonical",
-  "service_name": "canonlog-spring-demo",
+  "service_name": "canonical-log-spring-demo",
   "environment": "local",
 
   "http_request_method": "GET",
@@ -183,10 +183,10 @@ See [`samples/spring-demo`](samples/spring-demo/README.md) — runs end-to-end o
 
 ## Modules
 
-- `canonlog-core` — accumulator, SPI, no framework deps
-- `canonlog-okhttp` / `canonlog-jdbc` — contributor instrumentation
-- `canonlog-okhttp-spring-boot-starter` / `canonlog-jdbc-spring-boot-starter` — per-contributor auto-config
-- `canonlog-spring-boot-starter` — umbrella: HTTP filter + transitive contributor starters
+- `canonical-log-core` — accumulator, SPI, no framework deps
+- `canonical-log-okhttp` / `canonical-log-jdbc` — contributor instrumentation
+- `canonical-log-okhttp-spring-boot-starter` / `canonical-log-jdbc-spring-boot-starter` — per-contributor auto-config
+- `canonical-log-spring-boot-starter` — umbrella: HTTP filter + transitive contributor starters
 
 ## Roadmap (deferred from v0.1)
 
